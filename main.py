@@ -1,6 +1,7 @@
 import sys
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLineEdit, QFormLayout
+    QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLineEdit, QFormLayout,
+    QMessageBox, QLabel
 )
 import requests
 import webbrowser
@@ -23,6 +24,8 @@ class User(Base):
     client_id = Column(String, nullable=True)
     api_secret = Column(String, nullable=True)
     redirect_url = Column(String, nullable=True)
+    access_token = Column(String, nullable=True)  # New column
+    code = Column(String, nullable=True)         # New column
 
 # Create the user table if it doesn't exist
 Base.metadata.create_all(engine)
@@ -62,16 +65,49 @@ class LoginWindow(QWidget):
         form_layout.addRow(self.login_button)
 
         form_layout.addRow("Access Token:", self.access_token)
+        
+        self.test_button = QPushButton("Test")
+        self.test_button.clicked.connect(self.test_user_info)
+        form_layout.addRow(self.test_button)
 
         # Set layout for the LoginWindow
         self.setLayout(form_layout)
+        
+    def test_user_info(self):
+        url = 'https://api.upstox.com/v2/user/profile'
+        headers = {
+            'accept': 'application/json',
+            'Authorization': f'Bearer {self.access_token.text()}',
+        }
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()  # Raise an HTTPError for bad responses (4xx and 5xx)
+            user_info = response.json()
 
+            # Save access_token and code to database
+            user = session.query(User).first()
+            if user:
+                user.access_token = self.access_token.text()
+                user.code = self.code.text()
+                session.commit()
+
+            # Display user information
+            QMessageBox.information(self, "User Info", f"User Info: {user_info}")
+        except requests.exceptions.HTTPError as http_err:
+            QMessageBox.critical(self, "HTTP Error", f"HTTP error occurred: {http_err}")
+        except requests.exceptions.RequestException as req_err:
+            QMessageBox.critical(self, "Request Error", f"An error occurred: {req_err}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred: {e}")
+        
     def prefill_fields(self):
         user = session.query(User).first()
         if user:
             self.client_id.setText(user.client_id or "")
             self.api_secret.setText(user.api_secret or "")
             self.redirect_url.setText(user.redirect_url or "")
+            self.access_token.setText(user.access_token or "")
+            self.code.setText(user.code or "")
 
     def handle_authorise(self):
         url = "https://api.upstox.com/v2/login/authorization/dialog/"
@@ -117,11 +153,19 @@ class LoginWindow(QWidget):
         new_user = User(
             client_id=self.client_id.text(),
             api_secret=self.api_secret.text(),
-            redirect_url=self.redirect_url.text()
+            redirect_url=self.redirect_url.text(),
+            access_token=self.access_token.text(),
+            code=self.code.text()
         )
         session.add(new_user)
         session.commit()
         print("User data saved to database.")
+        
+class TradeWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Trade Window")
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -131,6 +175,9 @@ class MainWindow(QMainWindow):
         # Create a "Login" button
         self.login_button = QPushButton("Login", self)
         self.login_button.clicked.connect(self.open_login_window)
+        
+        self.trade_button = QPushButton("Trade", self)
+        self.trade_button.clicked.connect(self.open_trade_window)
 
         # Create a layout to stack the label and button
         layout = QVBoxLayout()
@@ -139,13 +186,50 @@ class MainWindow(QMainWindow):
         # Create a central widget
         central_widget = QWidget()
         central_widget.setLayout(layout)
+        
         self.setCentralWidget(central_widget)
+        self.status_label = QLabel(self)
+        layout.addWidget(self.status_label)
+        
+        status = self.check_status()
+        if status:
+            layout.addWidget(self.trade_button)
+            self.status_label.setText("🟢 Connected")
+        else:
+            self.status_label.setText("🔴 Disconnected")
 
     def open_login_window(self):
         # Open the login window
         self.login_window = LoginWindow()
         self.login_window.resize(400, 300)
         self.login_window.show()
+    
+    def open_trade_window(self):
+        # Open the login window
+        self.trade_window = TradeWindow()
+        self.trade_window.resize(400, 300)
+        self.trade_window.show()
+    
+    def check_status(self):
+        user = session.query(User).first()
+        if user and user.access_token:
+            url = 'https://api.upstox.com/v2/user/profile'
+            headers = {
+                'accept': 'application/json',
+                'Authorization': f'Bearer {user.access_token}',
+            }
+            try:
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()  # Raise an HTTPError for bad responses (4xx and 5xx)
+                user_info = response.json()
+                print(user_info)
+                return True
+            except:
+                print('Reauthorise')
+                return False
+        else:
+            print('Reauthorise')
+            return False
 
 def main():
     app = QApplication(sys.argv)
